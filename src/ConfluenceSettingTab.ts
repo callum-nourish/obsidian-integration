@@ -86,6 +86,21 @@ export class ConfluenceSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Required backlink key")
+			.setDesc(
+				"Only notes containing this wiki-link (e.g. [[atlassian]]) will publish. Leave blank to disable the filter.",
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("[[atlassian]]")
+					.setValue(this.plugin.settings.keyBacklink ?? "")
+					.onChange(async (value) => {
+						this.plugin.settings.keyBacklink = value;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
 			.setName("First Header Page Name")
 			.setDesc("First header replaces file name as page title")
 			.addToggle((toggle) =>

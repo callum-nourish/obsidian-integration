@@ -19,6 +19,7 @@ import {
 	mapFrontmatterToConfluencePerPageUIValues,
 } from "./ConfluencePerPageForm";
 import { Mermaid } from "mermaid";
+import { normalizeBacklinkKey } from "./backlinkUtils";
 
 export interface ObsidianPluginSettings
 	extends ConfluenceUploadSettings.ConfluenceSettings {
@@ -30,6 +31,8 @@ export interface ObsidianPluginSettings
 		| "neutral"
 		| "dark"
 		| "forest";
+	keyBacklink: string;
+	backlinkPublishState: Record<string, string>;
 }
 
 interface FailedFile {
@@ -43,12 +46,20 @@ interface UploadResults {
 	filesUploadResult: UploadAdfFileResult[];
 }
 
+type PublisherResult = Awaited<ReturnType<Publisher["publish"]>>;
+
+interface BacklinkCleanupStats {
+	deletedPaths: string[];
+	failedDeletions: { path: string; reason: string }[];
+}
+
 export default class ConfluencePlugin extends Plugin {
 	settings!: ObsidianPluginSettings;
 	private isSyncing = false;
 	workspace!: Workspace;
 	publisher!: Publisher;
 	adaptor!: ObsidianAdaptor;
+	private confluenceClient!: ObsidianConfluenceClient;
 
 	activeLeafPath(workspace: Workspace) {
 		return workspace.getActiveViewOfType(MarkdownView)?.file.path;
@@ -72,7 +83,7 @@ export default class ConfluencePlugin extends Plugin {
 			mermaidItems.mermaidConfig,
 			mermaidItems.bodyStyles,
 		);
-		const confluenceClient = new ObsidianConfluenceClient({
+		this.confluenceClient = new ObsidianConfluenceClient({
 			host: this.settings.confluenceBaseUrl,
 			authentication: {
 				basic: {
@@ -96,7 +107,7 @@ export default class ConfluencePlugin extends Plugin {
 		this.publisher = new Publisher(
 			this.adaptor,
 			settingsLoader,
-			confluenceClient,
+			this.confluenceClient,
 			[new MermaidRendererPlugin(mermaidRenderer)],
 		);
 	}
@@ -174,6 +185,23 @@ export default class ConfluencePlugin extends Plugin {
 
 	async doPublish(publishFilter?: string): Promise<UploadResults> {
 		const adrFiles = await this.publisher.publish(publishFilter);
+
+		if (this.shouldEnforceBacklinkRequirement()) {
+			const eligiblePaths = new Set(
+				adrFiles.map(
+					(fileResult) => fileResult.node.file.absoluteFilePath,
+				),
+			);
+			const cleanupStats = await this.removeBacklinkOrphans(eligiblePaths);
+			await this.updateBacklinkState(adrFiles);
+			this.notifyBacklinkCleanup(cleanupStats);
+		} else if (
+			this.settings.backlinkPublishState &&
+			Object.keys(this.settings.backlinkPublishState).length > 0
+		) {
+			this.settings.backlinkPublishState = {};
+			await this.saveData(this.settings);
+		}
 
 		const returnVal: UploadResults = {
 			errorMessage: null,
@@ -490,12 +518,118 @@ export default class ConfluencePlugin extends Plugin {
 			{},
 			ConfluenceUploadSettings.DEFAULT_SETTINGS,
 			{ mermaidTheme: "match-obsidian" },
+			{ keyBacklink: "", backlinkPublishState: {} },
 			await this.loadData(),
 		);
+		this.settings.keyBacklink = this.settings.keyBacklink ?? "";
+		this.settings.backlinkPublishState =
+			this.settings.backlinkPublishState ?? {};
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 		await this.init();
+	}
+
+	private getNormalizedBacklinkKey(): string {
+		return normalizeBacklinkKey(this.settings.keyBacklink);
+	}
+
+	private shouldEnforceBacklinkRequirement(): boolean {
+		return this.getNormalizedBacklinkKey().length > 0;
+	}
+
+	private ensureBacklinkState(): Record<string, string> {
+		if (!this.settings.backlinkPublishState) {
+			this.settings.backlinkPublishState = {};
+		}
+		return this.settings.backlinkPublishState;
+	}
+
+	private async removeBacklinkOrphans(
+		currentEligiblePaths: Set<string>,
+	): Promise<BacklinkCleanupStats> {
+		const state = this.ensureBacklinkState();
+		const stats: BacklinkCleanupStats = {
+			deletedPaths: [],
+			failedDeletions: [],
+		};
+		const staleEntries = Object.entries(state).filter(
+			([path]) => !currentEligiblePaths.has(path),
+		);
+		if (staleEntries.length === 0) {
+			return stats;
+		}
+		if (!this.confluenceClient) {
+			return stats;
+		}
+		let mutated = false;
+		for (const [path, pageId] of staleEntries) {
+			if (!pageId) {
+				delete state[path];
+				mutated = true;
+				continue;
+			}
+			try {
+				await this.confluenceClient.content.deleteContent({
+					id: pageId,
+				});
+				delete state[path];
+				stats.deletedPaths.push(path);
+				mutated = true;
+			} catch (error) {
+				const reason =
+					error instanceof Error ? error.message : JSON.stringify(error);
+				stats.failedDeletions.push({ path, reason });
+				console.error("Failed to delete Confluence page", {
+					path,
+					pageId,
+					error,
+				});
+			}
+		}
+		if (mutated) {
+			await this.saveData(this.settings);
+		}
+		return stats;
+	}
+
+	private async updateBacklinkState(results: PublisherResult): Promise<void> {
+		const state = this.ensureBacklinkState();
+		let mutated = false;
+		for (const result of results) {
+			const path = result.node.file.absoluteFilePath;
+			const pageId = result.node.file.pageId;
+			if (pageId) {
+				if (state[path] !== pageId) {
+					state[path] = pageId;
+					mutated = true;
+				}
+			} else if (state[path]) {
+				delete state[path];
+				mutated = true;
+			}
+		}
+		if (mutated) {
+			await this.saveData(this.settings);
+		}
+	}
+
+	private notifyBacklinkCleanup(stats: BacklinkCleanupStats) {
+		if (!stats.deletedPaths.length && !stats.failedDeletions.length) {
+			return;
+		}
+		const parts = [] as string[];
+		if (stats.deletedPaths.length) {
+			parts.push(
+				`${stats.deletedPaths.length} Confluence page(s) removed after backlink removal.`,
+			);
+		}
+		if (stats.failedDeletions.length) {
+			parts.push(
+				`${stats.failedDeletions.length} page removal(s) failed; check console logs.`,
+			);
+		}
+		new Notice(parts.join(" "));
 	}
 }

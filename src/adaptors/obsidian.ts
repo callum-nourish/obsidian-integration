@@ -7,18 +7,23 @@ import {
 	MarkdownFile,
 	ConfluencePageConfig,
 } from "@markdown-confluence/lib";
+import type { ObsidianPluginSettings } from "../main";
+import {
+	fileContainsKeyBacklink,
+	normalizeBacklinkKey,
+} from "../backlinkUtils";
 import { lookup } from "mime-types";
 
 export default class ObsidianAdaptor implements LoaderAdaptor {
 	vault: Vault;
 	metadataCache: MetadataCache;
-	settings: ConfluenceUploadSettings.ConfluenceSettings;
+	settings: ObsidianPluginSettings;
 	app: App;
 
 	constructor(
 		vault: Vault,
 		metadataCache: MetadataCache,
-		settings: ConfluenceUploadSettings.ConfluenceSettings,
+		settings: ObsidianPluginSettings,
 		app: App,
 	) {
 		this.vault = vault;
@@ -28,6 +33,11 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 	}
 
 	async getMarkdownFilesToUpload(): Promise<FilesToUpload> {
+		const normalizedKey = normalizeBacklinkKey(
+			this.settings.keyBacklink,
+		);
+		const enforceBacklink = normalizedKey.length > 0;
+		const folderToPublish = this.settings.folderToPublish?.trim() ?? "";
 		const files = this.vault.getMarkdownFiles();
 		const filesToPublish = [];
 		for (const file of files) {
@@ -41,15 +51,24 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 					throw new Error("Missing File in Metadata Cache");
 				}
 				const frontMatter = fileFM.frontmatter;
+				const explicitPublish =
+					frontMatter && frontMatter["connie-publish"] === true;
+				const explicitExclude =
+					frontMatter && frontMatter["connie-publish"] === false;
 
-				if (
-					(file.path.startsWith(this.settings.folderToPublish) &&
-						(!frontMatter ||
-							frontMatter["connie-publish"] !== false)) ||
-					(frontMatter && frontMatter["connie-publish"] === true)
-				) {
-					filesToPublish.push(file);
+				const shouldBypassFolderFilter = enforceBacklink;
+				const isInsideFolderScope = folderToPublish
+					? file.path.startsWith(folderToPublish)
+					: true;
+
+				const eligibleByFolder = shouldBypassFolderFilter
+					? !explicitExclude
+					: (isInsideFolderScope && !explicitExclude) || explicitPublish;
+				if (!eligibleByFolder) {
+					continue;
 				}
+
+				filesToPublish.push(file);
 			} catch {
 				//ignore
 			}
@@ -58,6 +77,12 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 
 		for (const file of filesToPublish) {
 			const markdownFile = await this.loadMarkdownFile(file.path);
+			if (
+				enforceBacklink &&
+				!fileContainsKeyBacklink(markdownFile.contents, normalizedKey)
+			) {
+				continue;
+			}
 			filesToUpload.push(markdownFile);
 		}
 
