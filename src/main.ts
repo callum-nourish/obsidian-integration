@@ -186,22 +186,12 @@ export default class ConfluencePlugin extends Plugin {
 	async doPublish(publishFilter?: string): Promise<UploadResults> {
 		const adrFiles = await this.publisher.publish(publishFilter);
 
-		if (this.shouldEnforceBacklinkRequirement()) {
-			const eligiblePaths = new Set(
-				adrFiles.map(
-					(fileResult) => fileResult.node.file.absoluteFilePath,
-				),
-			);
-			const cleanupStats = await this.removeBacklinkOrphans(eligiblePaths);
-			await this.updateBacklinkState(adrFiles);
-			this.notifyBacklinkCleanup(cleanupStats);
-		} else if (
-			this.settings.backlinkPublishState &&
-			Object.keys(this.settings.backlinkPublishState).length > 0
-		) {
-			this.settings.backlinkPublishState = {};
-			await this.saveData(this.settings);
-		}
+		const eligiblePaths = new Set(
+			adrFiles.map((fileResult) => fileResult.node.file.absoluteFilePath),
+		);
+		const cleanupStats = await this.removeBacklinkOrphans(eligiblePaths);
+		await this.updateBacklinkState(adrFiles);
+		this.notifyBacklinkCleanup(cleanupStats);
 
 		const returnVal: UploadResults = {
 			errorMessage: null,
@@ -580,6 +570,12 @@ export default class ConfluencePlugin extends Plugin {
 				stats.deletedPaths.push(path);
 				mutated = true;
 			} catch (error) {
+				if (this.isConfluenceNotFound(error)) {
+					delete state[path];
+					stats.deletedPaths.push(path);
+					mutated = true;
+					continue;
+				}
 				const reason =
 					error instanceof Error ? error.message : JSON.stringify(error);
 				stats.failedDeletions.push({ path, reason });
@@ -633,5 +629,42 @@ export default class ConfluencePlugin extends Plugin {
 			);
 		}
 		new Notice(parts.join(" "));
+	}
+
+	private isConfluenceNotFound(error: unknown): boolean {
+		if (!error) {
+			return false;
+		}
+		const maybeError = error as {
+			statusCode?: number;
+			message?: string;
+			body?: { statusCode?: number };
+			response?: { status?: number; data?: { statusCode?: number } };
+		};
+		if (maybeError.statusCode === 404) {
+			return true;
+		}
+		if (maybeError.body?.statusCode === 404) {
+			return true;
+		}
+		if (maybeError.response?.status === 404) {
+			return true;
+		}
+		if (maybeError.response?.data?.statusCode === 404) {
+			return true;
+		}
+		const message =
+			typeof maybeError.message === "string"
+				? maybeError.message
+				: typeof error === "string"
+					? error
+					: undefined;
+		if (!message) {
+			return false;
+		}
+		return (
+			message.includes("NotFoundException") ||
+			message.includes("\"statusCode\":404")
+		);
 	}
 }

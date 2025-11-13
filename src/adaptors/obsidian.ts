@@ -41,10 +41,12 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 		const normalizedKey = normalizeBacklinkKey(
 			this.settings.keyBacklink,
 		);
-		const enforceBacklink = normalizedKey.length > 0;
 		const folderToPublish = this.settings.folderToPublish?.trim() ?? "";
+		const folderFilterActive = folderToPublish.length > 0;
+		const backlinkFilterActive = normalizedKey.length > 0;
 		const files = this.vault.getMarkdownFiles();
-		const filesToPublish: TFile[] = [];
+		const filesToUpload: FilesToUpload = [];
+
 		for (const file of files) {
 			try {
 				if (file.path.endsWith(".excalidraw")) {
@@ -61,39 +63,33 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 				const explicitExclude =
 					frontMatter && frontMatter["connie-publish"] === false;
 
-				const shouldBypassFolderFilter = enforceBacklink;
-				const isInsideFolderScope = folderToPublish
-					? file.path.startsWith(folderToPublish)
-					: true;
-
-				const eligibleByFolder = shouldBypassFolderFilter
-					? !explicitExclude
-					: (isInsideFolderScope && !explicitExclude) || explicitPublish;
-				if (!eligibleByFolder) {
+				if (explicitExclude) {
 					continue;
 				}
 
-				filesToPublish.push(file);
-			} catch {
-				//ignore
-			}
-		}
-		const filesToUpload: FilesToUpload = [];
+				const rawContents = await this.vault.cachedRead(file);
+				const hasBacklink =
+					backlinkFilterActive &&
+					fileContainsKeyBacklink(rawContents, normalizedKey);
+				const inFolder = folderFilterActive
+					? file.path.startsWith(folderToPublish)
+					: false;
 
-		for (const file of filesToPublish) {
-			const rawContents = await this.vault.cachedRead(file);
-			if (
-				enforceBacklink &&
-				!fileContainsKeyBacklink(rawContents, normalizedKey)
-			) {
-				continue;
+				const shouldPublish =
+					explicitPublish || inFolder || hasBacklink;
+				if (!shouldPublish) {
+					continue;
+				}
+
+				filesToUpload.push(
+					this.createMarkdownFilePayload(
+						file,
+						this.stripRequiredBacklink(rawContents, normalizedKey),
+					),
+				);
+			} catch {
+				// ignore individual file failures to continue publishing others
 			}
-			filesToUpload.push(
-				this.createMarkdownFilePayload(
-					file,
-					this.stripRequiredBacklink(rawContents, normalizedKey),
-				),
-			);
 		}
 
 		if (!filesToUpload.length) {
@@ -157,7 +153,7 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 		}
 		const escapedKey = escapeRegExp(normalizedKey);
 		const backlinkPattern = new RegExp(
-			`\[\[\s*${escapedKey}(?:#[^|\]]+)?(?:\|[^\]]+)?\s*\]\]`,
+			`\\[\\[\\s*${escapedKey}(?:#[^|\\]]+)?(?:\\|[^\\]]+)?\\s*\\]\\]`,
 			"gi",
 		);
 		const withoutBacklink = contents
@@ -172,19 +168,21 @@ export default class ObsidianAdaptor implements LoaderAdaptor {
 		normalizedKey: string,
 	): string {
 		const parts = [] as string[];
-		if (folderToPublish) {
+		if (folderToPublish && normalizedKey) {
+			parts.push(
+				`No markdown files were found inside "${folderToPublish}" and none contained [[${normalizedKey}]].`,
+			);
+		} else if (folderToPublish) {
 			parts.push(
 				`No markdown files were found inside "${folderToPublish}" that met the publish filters.`,
+			);
+		} else if (normalizedKey) {
+			parts.push(
+				`No markdown files in your vault contain [[${normalizedKey}]].`,
 			);
 		} else {
 			parts.push(
 				"No markdown files in your vault met the current publish filters.",
-			);
-		}
-
-		if (normalizedKey) {
-			parts.push(
-				`Each note must include [[${normalizedKey}]] (Required backlink key). Add it to at least one note or clear the setting to publish without it.`,
 			);
 		}
 
