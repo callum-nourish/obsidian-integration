@@ -1,3 +1,24 @@
+diff --git a/node_modules/@markdown-confluence/lib/dist/ADFProcessingPlugins/MermaidRendererPlugin.js b/node_modules/@markdown-confluence/lib/dist/ADFProcessingPlugins/MermaidRendererPlugin.js
+index d7e6ced..1d1cbfe 100644
+--- a/node_modules/@markdown-confluence/lib/dist/ADFProcessingPlugins/MermaidRendererPlugin.js
++++ b/node_modules/@markdown-confluence/lib/dist/ADFProcessingPlugins/MermaidRendererPlugin.js
+@@ -1,5 +1,6 @@
+ import { filter, traverse } from "@atlaskit/adf-utils/traverse";
+ import SparkMD5 from "spark-md5";
++const MERMAID_MEDIA_WIDTH_PERCENT = 95;
+ export function getMermaidFileName(mermaidContent) {
+     const mermaidText = mermaidContent ?? "flowchart LR\nid1[Missing Chart]";
+     const pathMd5 = SparkMD5.hash(mermaidText);
+@@ -57,7 +58,9 @@ export class MermaidRendererPlugin {
+                         const mappedImage = imageMap[mermaidFilename.uploadFilename];
+                         if (mappedImage) {
+                             node.type = "mediaSingle";
++                            node.attrs = node.attrs ?? {};
+                             node.attrs["layout"] = "center";
++                            node.attrs["width"] = MERMAID_MEDIA_WIDTH_PERCENT;
+                             if (node.content) {
+                                 node.content = [
+                                     {
 diff --git a/node_modules/@markdown-confluence/lib/dist/MarkdownTransformer/index.js b/node_modules/@markdown-confluence/lib/dist/MarkdownTransformer/index.js
 index e822d3f..0b46faa 100644
 --- a/node_modules/@markdown-confluence/lib/dist/MarkdownTransformer/index.js
@@ -14,6 +35,29 @@ index e822d3f..0b46faa 100644
  });
  md.enable([
      // Process html entity - &#123;, &#xAF;, &quot;, ...
+diff --git a/node_modules/@markdown-confluence/lib/src/ADFProcessingPlugins/MermaidRendererPlugin.ts b/node_modules/@markdown-confluence/lib/src/ADFProcessingPlugins/MermaidRendererPlugin.ts
+index 2e2b3de..4dbfc20 100644
+--- a/node_modules/@markdown-confluence/lib/src/ADFProcessingPlugins/MermaidRendererPlugin.ts
++++ b/node_modules/@markdown-confluence/lib/src/ADFProcessingPlugins/MermaidRendererPlugin.ts
+@@ -5,6 +5,8 @@ import { ADFProcessingPlugin, PublisherFunctions } from "./types";
+ import { ADFEntity } from "@atlaskit/adf-utils/types";
+ import SparkMD5 from "spark-md5";
+ 
++const MERMAID_MEDIA_WIDTH_PERCENT = 95;
++
+ export function getMermaidFileName(mermaidContent: string | undefined) {
+ 	const mermaidText = mermaidContent ?? "flowchart LR\nid1[Missing Chart]";
+ 	const pathMd5 = SparkMD5.hash(mermaidText);
+@@ -105,7 +107,9 @@ export class MermaidRendererPlugin
+ 							imageMap[mermaidFilename.uploadFilename];
+ 						if (mappedImage) {
+ 							node.type = "mediaSingle";
++							node.attrs = node.attrs ?? {};
+ 							node.attrs["layout"] = "center";
++							node.attrs["width"] = MERMAID_MEDIA_WIDTH_PERCENT;
+ 							if (node.content) {
+ 								node.content = [
+ 									{
 diff --git a/node_modules/@markdown-confluence/lib/src/ConniePageConfig.ts b/node_modules/@markdown-confluence/lib/src/ConniePageConfig.ts
 index dbbe9b8..7fa37bf 100644
 --- a/node_modules/@markdown-confluence/lib/src/ConniePageConfig.ts
